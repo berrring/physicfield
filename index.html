@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Симуляция Электрического Поля</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.2/p5.min.js"></script>
+    <style>
+        #container {
+            display: flex;
+        }
+        #simulation {
+            margin-right: 20px;
+        }
+        #controls {
+            width: 250px;
+            font-family: Arial, sans-serif;
+        }
+        .panel {
+            margin-bottom: 20px;
+            border: 1px solid #ccc;
+            padding: 10px;
+        }
+        button {
+            margin-top: 10px;
+            padding: 5px 10px;
+        }
+    </style>
+</head>
+<body>
+<div id="container">
+    <div id="simulation">
+        <canvas id="canvas"></canvas>
+    </div>
+    <div id="controls">
+        <div class="panel">
+            <h3>Частицы</h3>
+            <div>
+                <strong>Частица 1</strong><br>
+                <label>X (см): <input type="number" id="p1x" step="0.1" value="5"></label><br>
+                <label>Y (см): <input type="number" id="p1y" step="0.1" value="7.5"></label><br>
+                <label>Q (нКл): <input type="number" id="p1q" step="0.1" value="1"></label>
+            </div>
+            <div>
+                <strong>Частица 2</strong><br>
+                <label>X (см): <input type="number" id="p2x" step="0.1" value="15"></label><br>
+                <label>Y (см): <input type="number" id="p2y" step="0.1" value="7.5"></label><br>
+                <label>Q (нКл): <input type="number" id="p2q" step="0.1" value="-1"></label>
+            </div>
+            <label>Линий на частицу: <input type="number" id="numLines" min="1" max="100" value="20"></label><br>
+            <button id="reset">Сброс</button>
+        </div>
+        <div class="panel">
+            <h3>Информация</h3>
+            <p>Напряжённость (В/м): <span id="fieldStrength">0.00</span></p>
+            <p>Потенциал (В): <span id="potential">0.00</span></p>
+            <button id="calculate">Рассчитать</button>
+        </div>
+    </div>
+</div>
+<script>
+    const SIM_WIDTH = 20;
+    const SIM_HEIGHT = 15;
+    const CANVAS_WIDTH = 800;
+    const CANVAS_HEIGHT = 600;
+    const SCALE = CANVAS_WIDTH / SIM_WIDTH;
+    const k = 1;
+    let particles = [];
+    let draggedParticle = null;
+    let numLines = 20;
+    let lastCalculation = null;
+
+    class Particle {
+        constructor(x, y, q) {
+            this.x = x;
+            this.y = y;
+            this.q = q;
+        }
+        draw() {
+            let screenX = simToScreenX(this.x);
+            let screenY = simToScreenY(this.y);
+            fill(this.q > 0 ? 'red' : 'blue');
+            noStroke();
+            ellipse(screenX, screenY, 20, 20);
+        }
+        isClicked(screenX, screenY) {
+            let simX = screenToSimX(screenX);
+            let simY = screenToSimY(screenY);
+            let dx = simX - this.x;
+            let dy = simY - this.y;
+            return dx * dx + dy * dy < (0.5 * 0.5);
+        }
+    }
+
+    function setup() {
+        if (!window.p5) {
+            console.error("Библиотека p5.js не загружена!");
+            return;
+        }
+        let canvas = createCanvas(CANVAS_WIDTH, CANVAS_HEIGHT);
+        canvas.parent('simulation');
+        console.log("Холст создан:", canvas);
+        particles.push(new Particle(5, 7.5, 1));
+        particles.push(new Particle(15, 7.5, -1));
+        ['p1x', 'p1y', 'p1q', 'p2x', 'p2y', 'p2q'].forEach(id => {
+            let element = document.getElementById(id);
+            if (element) element.addEventListener('change', updateParticles);
+            else console.error(`Элемент с id ${id} не найден`);
+        });
+        let numLinesInput = document.getElementById('numLines');
+        if (numLinesInput) {
+            numLinesInput.addEventListener('change', (e) => {
+                numLines = constrain(parseInt(e.target.value), 1, 100);
+            });
+        } else console.error("Элемент с id numLines не найден");
+        let resetButton = document.getElementById('reset');
+        if (resetButton) resetButton.addEventListener('click', resetParticles);
+        else console.error("Элемент с id reset не найден");
+        let calculateButton = document.getElementById('calculate');
+        if (calculateButton) {
+            calculateButton.addEventListener('click', calculateAtCursor);
+            console.log("Обработчик для кнопки 'Рассчитать' привязан");
+        } else {
+            console.error("Элемент с id calculate не найден");
+        }
+    }
+
+    function draw() {
+        background(220);
+        drawAxes();
+        for (let particle of particles) {
+            particle.draw();
+        }
+        drawFieldLines();
+        if (lastCalculation) {
+            fill(0);
+            textSize(12);
+            textAlign(LEFT, TOP);
+            let textX = lastCalculation.screenX + 10;
+            let textY = lastCalculation.screenY + 10;
+            text(`E = ${lastCalculation.E.toFixed(2)} В/м`, textX, textY);
+            text(`φ = ${lastCalculation.phi.toFixed(2)} В`, textX, textY + 15);
+        }
+    }
+
+    function drawAxes() {
+        stroke(0);
+        strokeWeight(3);
+        line(0, CANVAS_HEIGHT, CANVAS_WIDTH, CANVAS_HEIGHT);
+        line(0, 0, 0, CANVAS_HEIGHT);
+        fill(0);
+        textSize(14);
+        textAlign(CENTER, TOP);
+        for (let x = 0; x <= SIM_WIDTH; x += 2.5) {
+            let screenX = simToScreenX(x);
+            line(screenX, CANVAS_HEIGHT, screenX, CANVAS_HEIGHT - 8);
+            text(x.toFixed(1), screenX, CANVAS_HEIGHT + 10);
+        }
+        text('X', simToScreenX(SIM_WIDTH) - 10, CANVAS_HEIGHT + 20);
+        textAlign(RIGHT, CENTER);
+        for (let y = 0; y <= SIM_HEIGHT; y += 2.5) {
+            let screenY = simToScreenY(y);
+            line(0, screenY, 8, screenY);
+            text(y.toFixed(1), -10, screenY);
+        }
+        text('Y', -20, simToScreenY(SIM_HEIGHT) + 10);
+    }
+
+    function drawFieldLines() {
+        stroke(0);
+        strokeWeight(1);
+        noFill();
+        const dl = 0.15;
+        const maxSteps = 500;
+        const radius = 0.5;
+        for (let particle of particles) {
+            let direction = particle.q > 0 ? 1 : -1;
+            for (let i = 0; i < numLines; i++) {
+                let angle = i * TWO_PI / numLines;
+                let startX = particle.x + radius * cos(angle);
+                let startY = particle.y + radius * sin(angle);
+                let currentX = startX;
+                let currentY = startY;
+                let points = [createVector(startX, startY)];
+                beginShape();
+                vertex(simToScreenX(startX), simToScreenY(startY));
+                for (let step = 0; step < maxSteps; step++) {
+                    if (currentX < 0 || currentX > SIM_WIDTH || currentY < 0 || currentY > SIM_HEIGHT) break;
+                    let field = calculateField(currentX, currentY, false);
+                    let mag = sqrt(field.Ex * field.Ex + field.Ey * field.Ey);
+                    if (mag < 1e-6) break;
+                    let dirX = direction * field.Ex / mag;
+                    let dirY = direction * field.Ey / mag;
+                    currentX += dl * dirX;
+                    currentY += dl * dirY;
+                    points.push(createVector(currentX, currentY));
+                    vertex(simToScreenX(currentX), simToScreenY(currentY));
+                    let shouldBreak = false;
+                    for (let p of particles) {
+                        let dx = currentX - p.x;
+                        let dy = currentY - p.y;
+                        if (dx * dx + dy * dy < 0.2 * 0.2) {
+                            shouldBreak = true;
+                            break;
+                        }
+                    }
+                    if (shouldBreak) break;
+                }
+                endShape();
+                if (points.length > 10) {
+                    let p1 = points[points.length - 2];
+                    let p2 = points[points.length - 1];
+                    let screenP1 = createVector(simToScreenX(p1.x), simToScreenY(p1.y));
+                    let screenP2 = createVector(simToScreenX(p2.x), simToScreenY(p2.y));
+                    let dir = p5.Vector.sub(screenP2, screenP1).normalize();
+                    let arrowSize = 5;
+                    let arrow1 = p5.Vector.add(screenP2, dir.copy().rotate(PI / 6).mult(-arrowSize));
+                    let arrow2 = p5.Vector.add(screenP2, dir.copy().rotate(-PI / 6).mult(-arrowSize));
+                    line(screenP2.x, screenP2.y, arrow1.x, arrow1.y);
+                    line(screenP2.x, screenP2.y, arrow2.x, arrow2.y);
+                }
+            }
+        }
+    }
+
+    function calculateField(x, y, log = false) {
+        let Ex = 0, Ey = 0;
+        particles.forEach((p, i) => {
+            let dx = x - p.x;
+            let dy = y - p.y;
+            let r2 = dx * dx + dy * dy;
+            let r = sqrt(r2);
+            if (r > 0.001) {
+                let E = k * p.q / r2;
+                let Ex_i = E * (dx / r);
+                let Ey_i = E * (dy / r);
+                Ex += Ex_i;
+                Ey += Ey_i;
+                if (log) console.log(`Частица ${i+1}: r=${r.toFixed(4)} см, q=${p.q} нКл, Ex=${Ex_i.toFixed(2)}, Ey=${Ey_i.toFixed(2)}`);
+            } else if (log) {
+                console.log(`Частица ${i+1}: r=${r.toFixed(4)} см, слишком близко, игнорируется`);
+            }
+        });
+        return { Ex: isNaN(Ex) ? 0 : Ex, Ey: isNaN(Ey) ? 0 : Ey };
+    }
+
+    function calculatePotential(x, y, log = false) {
+        let V = 0;
+        particles.forEach((p, i) => {
+            let dx = x - p.x;
+            let dy = y - p.y;
+            let r = sqrt(dx * dx + dy * dy);
+            if (r > 0.001) {
+                let V_i = k * p.q / r;
+                V += V_i;
+                if (log) console.log(`Частица ${i+1}: r=${r.toFixed(4)} см, q=${p.q} нКл, V=${V_i.toFixed(2)} В`);
+            } else if (log) {
+                console.log(`Частица ${i+1}: r=${r.toFixed(4)} см, слишком близко, игнорируется`);
+            }
+        });
+        return isNaN(V) ? 0 : V;
+    }
+
+    function calculateAtCursor() {
+        console.log("Кнопка 'Рассчитать' нажата");
+        let screenX = mouseX;
+        let screenY = mouseY;
+        let simX = screenToSimX(screenX);
+        let simY = screenToSimY(screenY);
+        if (screenX < 0 || screenX > CANVAS_WIDTH || screenY < 0 || screenY > CANVAS_HEIGHT) {
+            console.warn("Курсор вне холста, используется центр холста");
+            screenX = CANVAS_WIDTH / 2;
+            screenY = CANVAS_HEIGHT / 2;
+            simX = SIM_WIDTH / 2;
+            simY = SIM_HEIGHT / 2;
+        }
+        console.log(`Расчёт для: x=${simX.toFixed(2)} см, y=${simY.toFixed(2)} см`);
+        let field = calculateField(simX, simY, true);
+        let fieldStrength = sqrt(field.Ex * field.Ex + field.Ey * field.Ey);
+        let potential = calculatePotential(simX, simY, true);
+        console.log(`Результат: E=${fieldStrength.toFixed(2)} В/м, φ=${potential.toFixed(2)} В`);
+        lastCalculation = {
+            screenX: screenX,
+            screenY: screenY,
+            E: fieldStrength,
+            phi: potential
+        };
+        let fieldStrengthSpan = document.getElementById('fieldStrength');
+        let potentialSpan = document.getElementById('potential');
+        if (fieldStrengthSpan && potentialSpan) {
+            fieldStrengthSpan.textContent = fieldStrength.toFixed(2);
+            potentialSpan.textContent = potential.toFixed(2);
+        } else {
+            console.error("Не найдены элементы fieldStrength или potential");
+        }
+    }
+
+    function simToScreenX(x) {
+        return x * SCALE;
+    }
+
+    function screenToSimX(screenX) {
+        return screenX / SCALE;
+    }
+
+    function simToScreenY(y) {
+        return CANVAS_HEIGHT - y * SCALE;
+    }
+
+    function screenToSimY(screenY) {
+        return (CANVAS_HEIGHT - screenY) / SCALE;
+    }
+
+    function mousePressed() {
+        if (mouseX >= 0 && mouseX <= CANVAS_WIDTH && mouseY >= 0 && mouseY <= CANVAS_HEIGHT) {
+            if (mouseButton === LEFT) {
+                for (let particle of particles) {
+                    if (particle.isClicked(mouseX, mouseY)) {
+                        draggedParticle = particle;
+                        break;
+                    }
+                }
+            } else if (mouseButton === RIGHT) {
+                let simX = screenToSimX(mouseX);
+                let simY = screenToSimY(mouseY);
+                console.log(`Правый клик: x=${simX.toFixed(2)} см, y=${simY.toFixed(2)} см`);
+                let field = calculateField(simX, simY, true);
+                let fieldStrength = sqrt(field.Ex * field.Ex + field.Ey * field.Ey);
+                let potential = calculatePotential(simX, simY, true);
+                console.log(`Результат: E=${fieldStrength.toFixed(2)} В/м, φ=${potential.toFixed(2)} В`);
+                lastCalculation = {
+                    screenX: mouseX,
+                    screenY: mouseY,
+                    E: fieldStrength,
+                    phi: potential
+                };
+                let fieldStrengthSpan = document.getElementById('fieldStrength');
+                let potentialSpan = document.getElementById('potential');
+                if (fieldStrengthSpan && potentialSpan) {
+                    fieldStrengthSpan.textContent = fieldStrength.toFixed(2);
+                    potentialSpan.textContent = potential.toFixed(2);
+                } else {
+                    console.error("Не найдены элементы fieldStrength или potential");
+                }
+            }
+        } else {
+            console.warn("Клик вне холста");
+        }
+    }
+
+    function mouseDragged() {
+        if (draggedParticle) {
+            draggedParticle.x = constrain(screenToSimX(mouseX), 0, SIM_WIDTH);
+            draggedParticle.y = constrain(screenToSimY(mouseY), 0, SIM_HEIGHT);
+            updateControls();
+        }
+    }
+
+    function mouseReleased() {
+        draggedParticle = null;
+    }
+
+    function updateParticles() {
+        particles[0].x = constrain(parseFloat(document.getElementById('p1x').value) || 5, 0, SIM_WIDTH);
+        particles[0].y = constrain(parseFloat(document.getElementById('p1y').value) || 7.5, 0, SIM_HEIGHT);
+        particles[0].q = parseFloat(document.getElementById('p1q').value) || 1;
+        particles[1].x = constrain(parseFloat(document.getElementById('p2x').value) || 15, 0, SIM_WIDTH);
+        particles[1].y = constrain(parseFloat(document.getElementById('p2y').value) || 7.5, 0, SIM_HEIGHT);
+        particles[1].q = parseFloat(document.getElementById('p2q').value) || -1;
+        updateControls();
+    }
+
+    function updateControls() {
+        document.getElementById('p1x').value = particles[0].x.toFixed(1);
+        document.getElementById('p1y').value = particles[0].y.toFixed(1);
+        document.getElementById('p1q').value = particles[0].q.toFixed(1);
+        document.getElementById('p2x').value = particles[1].x.toFixed(1);
+        document.getElementById('p2y').value = particles[1].y.toFixed(1);
+        document.getElementById('p2q').value = particles[1].q.toFixed(1);
+    }
+
+    function resetParticles() {
+        particles[0] = new Particle(5, 7.5, 1);
+        particles[1] = new Particle(15, 7.5, -1);
+        updateControls();
+    }
+</script>
+</body>
+</html>
